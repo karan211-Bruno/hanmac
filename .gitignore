@@ -1,0 +1,12 @@
+node_modules/
+out/
+release/
+release-ipad/
+dist/
+.DS_Store
+*.log
+ios/HanMac/Web/
+ios/build/
+ios/DerivedData/
+*.xcarchive
+*.ipa

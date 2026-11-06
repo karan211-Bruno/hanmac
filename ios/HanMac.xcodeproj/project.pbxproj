@@ -1,0 +1,252 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		9F74B657A4B1322FC36CE1A9 /* HanMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38F82F910AD151DB56A74827 /* HanMacApp.swift */; };
+		0B2E5E621653507C5A64C30F /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCADD8520AC61A3BAA61C720 /* ContentView.swift */; };
+		87F829B8DDC952A4EE5D0AC2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 31E99AAE1866846968D7091E /* Assets.xcassets */; };
+		665B5E37FFF9A4A66D077A59 /* Web in Resources */ = {isa = PBXBuildFile; fileRef = ADC913A28263815E362B21AC /* Web */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		38F82F910AD151DB56A74827 /* HanMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HanMacApp.swift; sourceTree = "<group>"; };
+		FCADD8520AC61A3BAA61C720 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		31E99AAE1866846968D7091E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		ADC913A28263815E362B21AC /* Web */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Web; sourceTree = "<group>"; };
+		B26E6BC620E3BC336019B938 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		55A1C9BCA91567DCB95E502D /* HanMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HanMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A6765FAC661DE2B2EF9D44F2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		16679F35A908D9F3788D1A22 = {
+			isa = PBXGroup;
+			children = (
+				6BEDA8DD74F3B756A21722B7 /* HanMac */,
+				7750C7FB109060B46F04E4D3 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		6BEDA8DD74F3B756A21722B7 /* HanMac */ = {
+			isa = PBXGroup;
+			children = (
+				38F82F910AD151DB56A74827 /* HanMacApp.swift */,
+				FCADD8520AC61A3BAA61C720 /* ContentView.swift */,
+				31E99AAE1866846968D7091E /* Assets.xcassets */,
+				ADC913A28263815E362B21AC /* Web */,
+				B26E6BC620E3BC336019B938 /* Info.plist */,
+			);
+			path = HanMac;
+			sourceTree = "<group>";
+		};
+		7750C7FB109060B46F04E4D3 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				55A1C9BCA91567DCB95E502D /* HanMac.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		910D07DC3EE92F18F9B67FC2 /* HanMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6B832924B4AB6794B1F7CB65 /* Build configuration list for PBXNativeTarget "HanMac" */;
+			buildPhases = (
+				1F5E89DEE6912AD29B4B1080 /* Sources */,
+				A6765FAC661DE2B2EF9D44F2 /* Frameworks */,
+				9B329201FC58809065AC237A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = HanMac;
+			productName = HanMac;
+			productReference = 55A1C9BCA91567DCB95E502D /* HanMac.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		B3F18C3BB4D75400BACB2A43 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					910D07DC3EE92F18F9B67FC2 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = E79D45114A1DE452E5709887 /* Build configuration list for PBXProject "HanMac" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = ko;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				ko,
+				en,
+				Base,
+			);
+			mainGroup = 16679F35A908D9F3788D1A22;
+			productRefGroup = 7750C7FB109060B46F04E4D3 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				910D07DC3EE92F18F9B67FC2 /* HanMac */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		9B329201FC58809065AC237A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				87F829B8DDC952A4EE5D0AC2 /* Assets.xcassets in Resources */,
+				665B5E37FFF9A4A66D077A59 /* Web in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1F5E89DEE6912AD29B4B1080 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9F74B657A4B1322FC36CE1A9 /* HanMacApp.swift in Sources */,
+				0B2E5E621653507C5A64C30F /* ContentView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		11199442338483B40CDDFF52 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				 SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		8B2CE4F02A0B433A37E7154A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		2B1849E143F63FAC5607106E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = HanMac/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.hanmac.document.ipad;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		3D3B9E4278FBEDA1BB19D88C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = HanMac/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.hanmac.document.ipad;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		E79D45114A1DE452E5709887 /* Build configuration list for PBXProject "HanMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				11199442338483B40CDDFF52 /* Debug */,
+				8B2CE4F02A0B433A37E7154A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		6B832924B4AB6794B1F7CB65 /* Build configuration list for PBXNativeTarget "HanMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2B1849E143F63FAC5607106E /* Debug */,
+				3D3B9E4278FBEDA1BB19D88C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = B3F18C3BB4D75400BACB2A43 /* Project object */;
+}

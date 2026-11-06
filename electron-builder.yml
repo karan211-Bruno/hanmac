@@ -1,0 +1,80 @@
+appId: com.hanmac.documents
+productName: 한맥 문서
+copyright: Copyright © 2026 HanMac
+afterPack: scripts/afterPack.cjs
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - out/**/*
+  - package.json
+
+extraResources:
+  - from: resources/icon.png
+    to: icon.png
+
+asar: true
+compression: normal
+
+mac:
+  category: public.app-category.productivity
+  icon: build/icon.icns
+  # 로컬 빌드는 서명 생략. 배포용은 scripts/release-mac.sh / docs/SIGNING.md 참고.
+  identity: null
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+  darkModeSupport: false
+  extendInfo:
+    NSHumanReadableCopyright: Copyright © 2026 HanMac
+    NSHighResolutionCapable: true
+
+dmg:
+  title: 한맥 문서
+  artifactName: HanMac-Electron-${version}-${arch}.${ext}
+  window:
+    width: 540
+    height: 380
+  contents:
+    - x: 140
+      y: 190
+      type: file
+    - x: 400
+      y: 190
+      type: link
+      path: /Applications
+
+fileAssociations:
+  - ext:
+      - hwp
+    name: HWP 문서
+    description: 한글 5.0 문서 (읽기 전용 · 텍스트 가져오기)
+    role: Viewer
+    rank: Alternate
+  - ext:
+      - hwpx
+    name: HWPX 문서
+    description: 한글 OWPML 문서
+    role: Editor
+  - ext:
+      - html
+      - htm
+    name: HTML 문서
+    role: Editor
+  - ext:
+      - txt
+    name: 텍스트 문서
+    role: Editor
+  - ext:
+      - md
+      - markdown
+    name: Markdown 문서
+    role: Editor
