@@ -183,35 +183,559 @@ async function inflateRawBrowser(input: Uint8Array): Promise<Uint8Array | null> 
   if (typeof DecompressionStream === 'undefined') return null
   const formats: CompressionFormat[] = ['deflate-raw', 'deflate']
   for (const format of formats) {
+    const chunks: Uint8Array[] = []
     try {
       const ds = new DecompressionStream(format)
       const writer = ds.writable.getWriter()
-      void writer.write(input as unknown as BufferSource)
-      void writer.close()
+      writer.write(input as unknown as BufferSource).catch(() => {})
+      writer.close().catch(() => {})
       const reader = ds.readable.getReader()
-      const chunks: Uint8Array[] = []
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        if (value) chunks.push(value)
+        if (value && value.length > 0) chunks.push(value)
       }
+    } catch {
+      // HWP raw deflate 스트림 끝에 패딩 바이트가 있거나 Z_SYNC_FLUSH로 끝나면
+      // 모든 압축 해제 청크를 내보낸 뒤 마지막 read()에서 예외가 발생할 수 있다.
+    }
+    if (chunks.length > 0) {
       const result = concatUint8(chunks)
       if (result.length > 0) return result
-    } catch {
-      // try next
     }
   }
   return null
 }
 
+function readInt32LE(bytes: Uint8Array, offset: number): number {
+  return (
+    bytes[offset] |
+    (bytes[offset + 1] << 8) |
+    (bytes[offset + 2] << 16) |
+    (bytes[offset + 3] << 24)
+  )
+}
+
+interface HwpBrowserRecord {
+  tag: number
+  level: number
+  payload: Uint8Array
+}
+
+interface HwpBrowserCharShape {
+  fontFamily: string
+  fontSize: number
+  bold: boolean
+  italic: boolean
+  underline: boolean
+  strike: boolean
+  color?: string
+  highlight?: string
+}
+
+interface HwpBrowserParaShape {
+  align: Align
+  indent?: number
+  heading?: number
+}
+
+interface HwpBrowserDocContext {
+  charShapes: HwpBrowserCharShape[]
+  paraShapes: HwpBrowserParaShape[]
+  borderFills: Array<string | undefined>
+}
+
+function colorRefToHexBrowser(colorRef: number): string {
+  const r = colorRef & 0xff
+  const g = (colorRef >>> 8) & 0xff
+  const b = (colorRef >>> 16) & 0xff
+  return '#' + [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')
+}
+
+function normalizeFontFamilyBrowser(name: string): string {
+  const cleaned = name.replace(/^[-\s]+/, '').trim()
+  if (!cleaned) return '함초롬돋움'
+  if (/명조|바탕/.test(cleaned)) return '함초롬바탕'
+  if (/고딕|돋움|굴림|맑은/.test(cleaned)) return '함초롬돋움'
+  return cleaned
+}
+
+function parseRecordsBrowser(bytes: Uint8Array): HwpBrowserRecord[] {
+  const records: HwpBrowserRecord[] = []
+  let offset = 0
+  while (offset + 4 <= bytes.length) {
+    const h = readUInt32LE(bytes, offset)
+    offset += 4
+    const tag = h & 0x3ff
+    const level = (h >>> 10) & 0x3ff
+    let size = (h >>> 20) & 0xfff
+    if (size === 0xfff) {
+      if (offset + 4 > bytes.length) break
+      size = readUInt32LE(bytes, offset)
+      offset += 4
+    }
+    if (size < 0 || offset + size > bytes.length) break
+    records.push({ tag, level, payload: bytes.subarray(offset, offset + size) })
+    offset += size
+  }
+  return records
+}
+
+function parseBorderFillBgBrowser(payload: Uint8Array): string | undefined {
+  if (payload.length < 40) return undefined
+  for (let offset = 26; offset + 8 <= payload.length; offset += 2) {
+    const fillType = readUInt32LE(payload, offset)
+    if (fillType === 1) {
+      const bgRef = readUInt32LE(payload, offset + 4)
+      if (bgRef === 0xffffffff || bgRef === 0x00ffffff) return undefined
+      const hex = colorRefToHexBrowser(bgRef)
+      return hex !== '#ffffff' && hex !== '#000000' ? hex : undefined
+    }
+  }
+  return undefined
+}
+
+async function parseDocInfoBrowser(
+  raw: Uint8Array | null,
+  compressed: boolean,
+  utf16Decoder: TextDecoder
+): Promise<HwpBrowserDocContext> {
+  const ctx: HwpBrowserDocContext = {
+    charShapes: [],
+    paraShapes: [],
+    borderFills: [undefined]
+  }
+  if (!raw || raw.length === 0) return ctx
+  const inflated = compressed ? await inflateRawBrowser(raw) : null
+  const candidates = compressed ? [inflated, raw] : [raw, await inflateRawBrowser(raw)]
+
+  for (const cand of candidates) {
+    if (!cand || cand.length === 0) continue
+    const records = parseRecordsBrowser(cand)
+    if (records.length === 0) continue
+
+    const hangulFonts: string[] = []
+    const allFonts: string[] = []
+    let hangulLimit = Infinity
+    const idMap = records.find((r) => r.tag === 17)
+    if (idMap && idMap.payload.length >= 8) {
+      hangulLimit = readInt32LE(idMap.payload, 4)
+    }
+
+    for (const rec of records) {
+      if (rec.tag === 19 && rec.payload.length >= 3) {
+        const nameLen = readUInt16LE(rec.payload, 1)
+        const end = Math.min(rec.payload.length, 3 + nameLen * 2)
+        const name = utf16Decoder
+          .decode(rec.payload.subarray(3, end))
+          .replace(/\u0000/g, '')
+          .trim()
+        allFonts.push(name || '함초롬돋움')
+        if (hangulFonts.length < hangulLimit) hangulFonts.push(name || '함초롬돋움')
+      } else if (rec.tag === 20) {
+        ctx.borderFills.push(parseBorderFillBgBrowser(rec.payload))
+      } else if (rec.tag === 21 && rec.payload.length >= 56) {
+        const p = rec.payload
+        const fontId = readUInt16LE(p, 0)
+        const heightHwp = readInt32LE(p, 42)
+        const attr = readUInt32LE(p, 46)
+        const colorRef = readUInt32LE(p, 52)
+        const shadeRef = p.length >= 64 ? readUInt32LE(p, 60) : 0xffffffff
+
+        const fontName = hangulFonts[fontId] ?? allFonts[fontId] ?? '함초롬돋움'
+        const pt = Math.max(6, Math.min(120, heightHwp / 100))
+        const fontSize = Math.round(((pt * 4) / 3) * 100) / 100
+        const underlineType = (attr >>> 2) & 0x03
+        const strikeType = (attr >>> 18) & 0x07
+        const colorHex = colorRefToHexBrowser(colorRef)
+        const shadeHex =
+          shadeRef !== 0xffffffff && shadeRef !== 0xffffff
+            ? colorRefToHexBrowser(shadeRef)
+            : undefined
+
+        ctx.charShapes.push({
+          fontFamily: normalizeFontFamilyBrowser(fontName),
+          fontSize,
+          bold: (attr & 0x01) !== 0,
+          italic: (attr & 0x02) !== 0,
+          underline: underlineType === 1 || underlineType === 3,
+          strike: strikeType !== 0,
+          color: colorHex !== '#000000' ? colorHex : undefined,
+          highlight: shadeHex && shadeHex !== '#ffffff' ? shadeHex : undefined
+        })
+      } else if (rec.tag === 25 && rec.payload.length >= 8) {
+        const p = rec.payload
+        const attr1 = readUInt32LE(p, 0)
+        const alignCode = (attr1 >>> 2) & 0x07
+        const align: Align =
+          alignCode === 1
+            ? 'left'
+            : alignCode === 2
+              ? 'right'
+              : alignCode === 3
+                ? 'center'
+                : 'justify'
+        const leftMargin = readInt32LE(p, 4)
+        const indent =
+          leftMargin > 1000
+            ? Math.min(5, Math.max(1, Math.round(leftMargin / 4000)))
+            : undefined
+        const headingType = (attr1 >>> 23) & 0x03
+        const headingLevel = ((attr1 >>> 25) & 0x07) + 1
+        const heading =
+          headingType === 1 && headingLevel >= 1 && headingLevel <= 4
+            ? headingLevel
+            : undefined
+        ctx.paraShapes.push({ align, indent, heading })
+      }
+    }
+
+    if (ctx.charShapes.length > 0 || ctx.paraShapes.length > 0) return ctx
+  }
+  return ctx
+}
+
+function decodeStyledRunsBrowser(
+  payload: Uint8Array,
+  charShapePairs: Array<{ pos: number; shapeId: number }>,
+  ctx: HwpBrowserDocContext
+): HwpxRun[] {
+  const units: number[] = []
+  for (let i = 0; i + 1 < payload.length; i += 2) {
+    units.push(readUInt16LE(payload, i))
+  }
+  const sorted = [...charShapePairs].sort((a, b) => a.pos - b.pos)
+  const shapeAt = (charIndex: number): HwpBrowserCharShape | undefined => {
+    let shapeId = sorted[0]?.shapeId ?? 0
+    for (const pair of sorted) {
+      if (pair.pos <= charIndex) shapeId = pair.shapeId
+      else break
+    }
+    return ctx.charShapes[shapeId]
+  }
+
+  const runs: HwpxRun[] = []
+  const appendChar = (char: string, shape: HwpBrowserCharShape | undefined): void => {
+    if (!char) return
+    const run: HwpxRun = {
+      text: char,
+      bold: shape?.bold || undefined,
+      italic: shape?.italic || undefined,
+      underline: shape?.underline || undefined,
+      strike: shape?.strike || undefined,
+      color: shape?.color,
+      highlight: shape?.highlight,
+      fontFamily: shape?.fontFamily,
+      fontSize:
+        shape?.fontSize && Math.abs(shape.fontSize - 13.33) > 0.5
+          ? shape.fontSize
+          : undefined
+    }
+    const prev = runs[runs.length - 1]
+    if (
+      prev &&
+      !!prev.bold === !!run.bold &&
+      !!prev.italic === !!run.italic &&
+      !!prev.underline === !!run.underline &&
+      !!prev.strike === !!run.strike &&
+      (prev.color ?? '') === (run.color ?? '') &&
+      (prev.highlight ?? '') === (run.highlight ?? '') &&
+      (prev.fontFamily ?? '') === (run.fontFamily ?? '') &&
+      (prev.fontSize ?? 0) === (run.fontSize ?? 0)
+    ) {
+      prev.text += char
+    } else {
+      runs.push(run)
+    }
+  }
+
+  let idx = 0
+  while (idx < units.length) {
+    const u = units[idx]
+    const shape = shapeAt(idx)
+    if (u === 0x000d || u === 0x0000) {
+      idx += 1
+    } else if (u === 0x000a || u === 0x0018 || u === 0x001e || u === 0x001f) {
+      appendChar(u === 0x000a ? '\n' : ' ', shape)
+      idx += 1
+    } else if (u === 0x0009) {
+      appendChar('\t', shape)
+      idx += idx + 7 < units.length && units[idx + 7] === 0x0009 ? 8 : 1
+    } else if (u >= 0x0001 && u <= 0x001f) {
+      idx += 8
+    } else {
+      appendChar(String.fromCharCode(u), shape)
+      idx += 1
+    }
+  }
+
+  if (runs.length > 0) {
+    const last = runs[runs.length - 1]
+    last.text = last.text.replace(/[\n\r\t ]+$/g, '')
+    if (!last.text) runs.pop()
+  }
+  return runs
+}
+
+function parseSectionRecordsBrowser(
+  records: HwpBrowserRecord[],
+  ctx: HwpBrowserDocContext
+): { blocks: HwpxBlock[]; tables: number } {
+  let tableCounter = 0
+
+  const parseRange = (startIdx: number, endIdx: number, paraLevel: number): HwpxBlock[] => {
+    const out: HwpxBlock[] = []
+    let i = startIdx
+    while (i < endIdx) {
+      const rec = records[i]
+      if (rec.tag === 66 && rec.level === paraLevel) {
+        let next = i + 1
+        while (next < endIdx) {
+          const r = records[next]
+          if (r.level < paraLevel) break
+          if (r.level === paraLevel && (r.tag === 66 || r.tag === 72)) break
+          next += 1
+        }
+        out.push(...parseSingleParagraph(i, next, paraLevel))
+        i = next
+      } else {
+        i += 1
+      }
+    }
+    return out
+  }
+
+  const parseSingleParagraph = (pStart: number, pEnd: number, paraLevel: number): HwpxBlock[] => {
+    const hp = records[pStart].payload
+    const paraShapeId = hp.length >= 10 ? readUInt16LE(hp, 8) : 0
+    const breakType = hp.length >= 12 ? hp[11] : 0
+    const pageBreak = (breakType & 0x04) !== 0
+    const paraShape = ctx.paraShapes[paraShapeId]
+
+    let textPayload: Uint8Array | null = null
+    const charShapePairs: Array<{ pos: number; shapeId: number }> = []
+    const childBlocks: HwpxBlock[] = []
+
+    let i = pStart + 1
+    while (i < pEnd) {
+      const rec = records[i]
+      if (rec.level === paraLevel + 1 && rec.tag === 67) {
+        textPayload = rec.payload
+        i += 1
+      } else if (rec.level === paraLevel + 1 && rec.tag === 68) {
+        for (let off = 0; off + 8 <= rec.payload.length; off += 8) {
+          charShapePairs.push({
+            pos: readUInt32LE(rec.payload, off),
+            shapeId: readUInt32LE(rec.payload, off + 4)
+          })
+        }
+        i += 1
+      } else if (rec.level === paraLevel + 1 && rec.tag === 71) {
+        const ctrlId =
+          rec.payload.length >= 4
+            ? String.fromCharCode(rec.payload[3], rec.payload[2], rec.payload[1], rec.payload[0])
+            : ''
+        let ctrlEnd = i + 1
+        while (ctrlEnd < pEnd && records[ctrlEnd].level > rec.level) ctrlEnd += 1
+        if (ctrlId === 'tbl ') {
+          const tbl = parseTableControl(i + 1, ctrlEnd, rec.level + 1)
+          if (tbl) {
+            tableCounter += 1
+            childBlocks.push(tbl)
+          }
+        } else if (ctrlId === 'gso ') {
+          childBlocks.push(...extractGsoBlocks(i + 1, ctrlEnd))
+        }
+        i = ctrlEnd
+      } else {
+        i += 1
+      }
+    }
+
+    const runs = textPayload ? decodeStyledRunsBrowser(textPayload, charShapePairs, ctx) : []
+    const result: HwpxBlock[] = []
+    if (runs.some((r) => r.text.length > 0) || childBlocks.length === 0 || pageBreak) {
+      result.push({
+        type: 'paragraph',
+        runs,
+        align: paraShape?.align,
+        indent: paraShape?.indent,
+        heading: paraShape?.heading,
+        pageBreak: pageBreak ? true : undefined
+      })
+    }
+    result.push(...childBlocks)
+    return result
+  }
+
+  const parseTableControl = (
+    cStart: number,
+    cEnd: number,
+    tableLevel: number
+  ): HwpxTable | null => {
+    let rowCount = 0
+    let colCount = 0
+    let idx = cStart
+    while (idx < cEnd) {
+      const r = records[idx]
+      if (r.level === tableLevel && r.tag === 77 && r.payload.length >= 8) {
+        rowCount = readUInt16LE(r.payload, 4)
+        colCount = readUInt16LE(r.payload, 6)
+        idx += 1
+        break
+      }
+      idx += 1
+    }
+    if (rowCount <= 0 || colCount <= 0) return null
+
+    interface ParsedCell {
+      col: number
+      row: number
+      colspan: number
+      rowspan: number
+      background?: string
+      blocks: HwpxBlock[]
+    }
+    const cells: ParsedCell[] = []
+
+    while (idx < cEnd) {
+      const r = records[idx]
+      if (r.level === tableLevel && r.tag === 72 && r.payload.length >= 16) {
+        let cellEnd = idx + 1
+        while (cellEnd < cEnd) {
+          const next = records[cellEnd]
+          if (next.level < tableLevel) break
+          if (next.level === tableLevel && next.tag === 72) break
+          cellEnd += 1
+        }
+        const p = r.payload
+        const col = readUInt16LE(p, 8)
+        const row = readUInt16LE(p, 10)
+        const colspan = Math.max(1, readUInt16LE(p, 12))
+        const rowspan = Math.max(1, readUInt16LE(p, 14))
+        const background =
+          p.length >= 34 ? ctx.borderFills[readUInt16LE(p, 32)] : undefined
+
+        let cellParaLevel = tableLevel
+        for (let k = idx + 1; k < cellEnd; k += 1) {
+          if (records[k].tag === 66) {
+            cellParaLevel = records[k].level
+            break
+          }
+        }
+        const cellBlocks = parseRange(idx + 1, cellEnd, cellParaLevel)
+        cells.push({
+          col,
+          row,
+          colspan,
+          rowspan,
+          background,
+          blocks: cellBlocks.length > 0 ? cellBlocks : [{ type: 'paragraph', runs: [] }]
+        })
+        idx = cellEnd
+      } else {
+        idx += 1
+      }
+    }
+
+    if (cells.length === 0) return null
+    const byRow = new Map<number, ParsedCell[]>()
+    for (const c of cells) {
+      const list = byRow.get(c.row) ?? []
+      list.push(c)
+      byRow.set(c.row, list)
+    }
+    const rows: HwpxTableCell[][] = [...byRow.keys()]
+      .sort((a, b) => a - b)
+      .map((rIdx) =>
+        (byRow.get(rIdx) ?? [])
+          .sort((a, b) => a.col - b.col)
+          .map((c) => {
+            const firstPara = c.blocks.find(
+              (b): b is HwpxParagraph => b.type === 'paragraph' && !!b.align
+            )
+            return {
+              blocks: c.blocks,
+              colspan: c.colspan > 1 ? c.colspan : undefined,
+              rowspan: c.rowspan > 1 ? c.rowspan : undefined,
+              background: c.background,
+              align: firstPara?.align
+            }
+          })
+      )
+    return { type: 'table', rows, border: true }
+  }
+
+  const extractGsoBlocks = (gStart: number, gEnd: number): HwpxBlock[] => {
+    const out: HwpxBlock[] = []
+    let idx = gStart
+    while (idx < gEnd) {
+      const r = records[idx]
+      if (r.tag === 72) {
+        let subEnd = idx + 1
+        while (subEnd < gEnd && records[subEnd].level > r.level) subEnd += 1
+        let paraLevel = r.level + 1
+        for (let k = idx + 1; k < subEnd; k += 1) {
+          if (records[k].tag === 66) {
+            paraLevel = records[k].level
+            break
+          }
+        }
+        out.push(...parseRange(idx + 1, subEnd, paraLevel))
+        idx = subEnd
+      } else {
+        idx += 1
+      }
+    }
+    return out
+  }
+
+  return { blocks: parseRange(0, records.length, 0), tables: tableCounter }
+}
+
 async function parseHwpBrowser(bytes: Uint8Array): Promise<{
   text: string
+  blocks: HwpxBlock[]
   version: string
   compressed: boolean
   sections: number
+  tables: number
   usedPreview: boolean
 }> {
-  if (bytes.length < 512) throw new Error('파일이 너무 작습니다.')
+  if (bytes.length < 158) throw new Error('파일이 너무 작습니다.')
+
+  // HWP 3.0 시그니처 지원
+  const asciiSig = new TextDecoder('ascii').decode(bytes.subarray(0, Math.min(32, bytes.length)))
+  if (asciiSig.startsWith('HWP Document File V3.00')) {
+    const encrypted = readUInt16LE(bytes, 30 + 96) !== 0
+    if (encrypted) throw new Error('암호가 설정된 HWP 3.0 파일은 열 수 없습니다.')
+    const compressed = bytes[30 + 124] !== 0
+    const infoLen = readUInt16LE(bytes, 30 + 126)
+    const bodyOff = 30 + 128 + 1008 + infoLen
+    const rawBody = bytes.subarray(Math.min(bodyOff, bytes.length))
+    const body = compressed ? (await inflateRawBrowser(rawBody)) ?? rawBody : rawBody
+    const text = new TextDecoder('euc-kr', { fatal: false })
+      .decode(body)
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]+/g, ' ')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .join('\n')
+    const blocks: HwpxBlock[] = text.split('\n').map((line) => ({
+      type: 'paragraph',
+      runs: [{ text: line }]
+    }))
+    return {
+      text,
+      blocks,
+      version: '3.0.0.0',
+      compressed,
+      sections: 1,
+      tables: 0,
+      usedPreview: false
+    }
+  }
+
   for (let i = 0; i < 8; i += 1) {
     if (bytes[i] !== CFB_SIGNATURE[i]) {
       throw new Error('HWP 5.0 복합 파일 형식이 아닙니다.')
@@ -357,109 +881,76 @@ async function parseHwpBrowser(bytes: Uint8Array): Promise<{
     throw new Error('암호가 설정된 HWP 파일은 열 수 없습니다.')
   }
   const compressed = (flags & 0x01) !== 0
+  const distributed = (flags & 0x04) !== 0
+
+  const docInfoEntry = entries.find((e) => e.type === 2 && e.name === 'DocInfo')
+  const docCtx = await parseDocInfoBrowser(
+    docInfoEntry ? streamOf(docInfoEntry) : null,
+    compressed,
+    utf16Decoder
+  )
 
   const sectionEntries = entries
     .filter((e) => e.type === 2 && /^Section\d+$/.test(e.name))
     .sort((a, b) => Number(a.name.slice(7)) - Number(b.name.slice(7)))
 
-  const decodePara = (payload: Uint8Array): string => {
-    const units: number[] = []
-    for (let i = 0; i + 1 < payload.length; i += 2) {
-      units.push(readUInt16LE(payload, i))
-    }
-    const out: number[] = []
-    let idx = 0
-    while (idx < units.length) {
-      const u = units[idx]
-      if (u === 0x000d || u === 0x0000) {
-        idx += 1
-      } else if (u === 0x000a) {
-        out.push(0x000a)
-        idx += 1
-      } else if (u === 0x0009) {
-        out.push(0x0009)
-        idx += idx + 7 < units.length && units[idx + 7] === 0x0009 ? 8 : 1
-      } else if (u >= 0x0001 && u <= 0x001f) {
-        idx += 8
-      } else {
-        out.push(u)
-        idx += 1
-      }
-    }
-    const u16 = new Uint16Array(out)
-    return utf16Decoder.decode(u16.buffer)
-  }
+  const blocks: HwpxBlock[] = []
+  let tableCount = 0
 
-  const extractSectionText = (streamBytes: Uint8Array): string => {
-    const paragraphs: string[] = []
-    let current = ''
-    let seen = false
-    let offset = 0
-    while (offset + 4 <= streamBytes.length) {
-      const h = readUInt32LE(streamBytes, offset)
-      offset += 4
-      const tag = h & 0x3ff
-      let size = (h >>> 20) & 0xfff
-      if (size === 0xfff) {
-        if (offset + 4 > streamBytes.length) break
-        size = readUInt32LE(streamBytes, offset)
-        offset += 4
-      }
-      if (size < 0 || offset + size > streamBytes.length) break
-      const payload = streamBytes.subarray(offset, offset + size)
-      offset += size
-      if (tag === 0x42) {
-        if (seen) paragraphs.push(current)
-        current = ''
-        seen = true
-      } else if (tag === 0x43) {
-        current += decodePara(payload)
-      }
-    }
-    if (seen) paragraphs.push(current)
-    return paragraphs
-      .map((p) => p.replace(/[\n\r\t ]+$/g, ''))
-      .join('\n')
-      .trim()
-  }
-
-  let fullText = ''
-  for (const entry of sectionEntries) {
-    const raw = streamOf(entry)
-    if (raw.length === 0) continue
-    const inflated = compressed ? await inflateRawBrowser(raw) : null
-    const candidates = compressed ? [inflated, raw] : [raw, await inflateRawBrowser(raw)]
-    for (const cand of candidates) {
-      if (!cand || cand.length === 0) continue
-      const t = extractSectionText(cand)
-      if (t) {
-        fullText = fullText ? `${fullText}\n${t}` : t
-        break
+  if (!distributed) {
+    for (const entry of sectionEntries) {
+      const raw = streamOf(entry)
+      if (raw.length === 0) continue
+      const inflated = compressed ? await inflateRawBrowser(raw) : null
+      const candidates = compressed ? [inflated, raw] : [raw, await inflateRawBrowser(raw)]
+      for (const cand of candidates) {
+        if (!cand || cand.length === 0) continue
+        const recs = parseRecordsBrowser(cand)
+        if (recs.length === 0) continue
+        const parsed = parseSectionRecordsBrowser(recs, docCtx)
+        const hasBlocks = parsed.blocks.some(
+          (b) =>
+            (b.type === 'table' && b.rows.length > 0) ||
+            (b.type === 'paragraph' && b.runs.some((r) => r.text.trim().length > 0))
+        )
+        if (hasBlocks) {
+          blocks.push(...parsed.blocks)
+          tableCount += parsed.tables
+          break
+        }
       }
     }
   }
 
   let usedPreview = false
-  if (!fullText.trim()) {
+  if (blocks.length === 0) {
     const prv = entries.find((e) => e.type === 2 && e.name === 'PrvText')
     if (prv) {
       const raw = streamOf(prv)
       const start = raw.length >= 2 && raw[0] === 0xff && raw[1] === 0xfe ? 2 : 0
-      fullText = utf16Decoder.decode(raw.subarray(start)).replace(/\u0000/g, '').trim()
-      usedPreview = true
+      const previewText = utf16Decoder.decode(raw.subarray(start)).replace(/\u0000/g, '').trim()
+      if (previewText) {
+        for (const line of previewText.split('\n')) {
+          blocks.push({ type: 'paragraph', runs: line ? [{ text: line }] : [] })
+        }
+        usedPreview = true
+      }
     }
   }
 
-  if (!fullText.trim()) {
+  const fullText = blocksToText(blocks).trim()
+  if (!fullText && tableCount === 0) {
     throw new Error('문서에서 본문 텍스트를 찾지 못했습니다.')
   }
 
   const version = `${(verNum >>> 24) & 0xff}.${(verNum >>> 16) & 0xff}.${(verNum >>> 8) & 0xff}.${verNum & 0xff}`
   return {
     text: fullText,
+    blocks: blocks.length > 0 ? blocks : [{ type: 'paragraph', runs: [{ text: fullText }] }],
     version,
     compressed,
-    sections: sectionEntries.length,
+    sections: Math.max(1, sectionEntries.length),
+    tables: tableCount,
     usedPreview
   }
 }
@@ -803,20 +1294,21 @@ async function parseBufferInBrowser(data: ArrayBuffer, name: string): Promise<Op
   if (isCfb || ext === '.hwp') {
     const parsed = await parseHwpBrowser(bytes)
     const meta: OpenMeta = {
-      format: 'HWP 5.0',
+      format: parsed.version.startsWith('3.') ? 'HWP 3.0' : 'HWP 5.0',
       version: parsed.version,
       compressed: parsed.compressed,
       sections: parsed.sections,
       chars: parsed.text.length,
       usedPreview: parsed.usedPreview,
-      warning:
-        '구형 HWP는 본문 텍스트만 불러옵니다. 서식·표·그림은 복원되지 않으며, 저장은 HWPX로만 됩니다.'
+      warning: parsed.usedPreview
+        ? '배포용(미리보기) HWP 문서로 텍스트만 불러왔습니다. 저장 시 HWPX 형식으로 저장됩니다.'
+        : `HWP 문서의 서식·문단${parsed.tables > 0 ? `·표(${parsed.tables}개)` : ''}를 복원했습니다. 저장 시 HWPX 표준 형식으로 저장됩니다.`
     }
     const result: OpenResult = {
       path: name,
       name,
       kind: 'hwp',
-      html: textToHtml(parsed.text),
+      html: blocksToHtml(parsed.blocks),
       text: parsed.text,
       meta
     }

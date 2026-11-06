@@ -377,21 +377,22 @@ async function parseBuffer(
     try {
       const parsed = parseHwp(buffer)
       const meta: OpenMeta = {
-        format: 'HWP 5.0',
+        format: parsed.version.startsWith('3.') ? 'HWP 3.0' : 'HWP 5.0',
         version: parsed.version,
         compressed: parsed.compressed,
         encrypted: parsed.encrypted,
         sections: parsed.sections,
         chars: parsed.text.length,
         usedPreview: parsed.usedPreview,
-        warning:
-          '구형 HWP는 본문 텍스트만 불러옵니다. 서식·표·그림은 복원되지 않으며, 저장은 HWPX로만 됩니다.'
+        warning: parsed.usedPreview
+          ? '배포용(ViewText) 또는 특수 HWP 문서여서 미리보기 텍스트로 불러왔습니다. 저장은 HWPX 형식으로 됩니다.'
+          : '구형 HWP 문서를 서식·표와 함께 불러왔습니다. 편집 후 저장하면 표준 HWPX 형식으로 저장됩니다.'
       }
       return {
         path: null,
         name,
         kind: 'hwp',
-        html: textToHtml(parsed.text),
+        html: blocksToHtml(parsed.blocks),
         text: parsed.text,
         meta
       }
@@ -750,9 +751,9 @@ function buildMenu(): void {
             void dialog.showMessageBox({
               type: 'info',
               title: 'HWP/HWPX 안내',
-              message: '구형 HWP는 텍스트만 불러옵니다.',
+              message: 'HWP 및 HWPX 문서 지원 안내',
               detail:
-                'HWPX는 서식과 표를 포함해 읽고 쓸 수 있습니다. 구형 .hwp 파일은 본문 텍스트만 복원되며, 원본을 덮어쓰지 않고 항상 HWPX로 저장합니다.'
+                '구형 .hwp(HWP 5.0/3.0)와 표준 .hwpx 문서를 서식·표와 함께 읽어들입니다. 편집 후 저장할 때는 원본 .hwp를 덮어쓰지 않고 표준 HWPX 형식으로 저장합니다.'
             })
           }
         }

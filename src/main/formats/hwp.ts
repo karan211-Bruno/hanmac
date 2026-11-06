@@ -1,10 +1,21 @@
 import { inflateRawSync, inflateSync, constants as zlibConstants } from 'node:zlib'
+import { blocksToText } from '../../shared/hwpxHtml'
+import type {
+  Align,
+  HwpxBlock,
+  HwpxParagraph,
+  HwpxRun,
+  HwpxTable,
+  HwpxTableCell
+} from '../../shared/types'
 
-// HWP 5.0(구형 바이너리, OLE 복합 파일) 문서 읽기.
-// 공개된 「한글 문서 파일 형식 5.0」 규격을 참고해 직접 구현했다.
-// 서식·표·그림은 복원하지 않고 본문 텍스트만 추출한다.
+// HWP 5.0(OLE 복합 파일) 및 구형 HWP(3.0) 문서 읽기.
+// 공개된 「한글 문서 파일 형식 5.0」 규격을 바탕으로
+// DocInfo(글꼴·글자 모양·문단 모양·셀 배경)와 BodyText/SectionN(문단·서식 런·표·글상자)을
+// 모두 복원해 HwpxBlock[] 구조로 변환한다.
 
 const CFB_SIGNATURE = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])
+const HWP30_SIGNATURE = 'HWP Document File V3.00'
 const MAX_REGULAR_SECTOR = 0xfffffffa
 
 export type HwpErrorCode =
@@ -26,10 +37,13 @@ export class HwpError extends Error {
 
 export interface HwpParseResult {
   text: string
+  blocks: HwpxBlock[]
   version: string
   compressed: boolean
   encrypted: boolean
+  distributed?: boolean
   sections: number
+  tables: number
   usedPreview: boolean
 }
 
@@ -44,6 +58,29 @@ interface HwpRecord {
   tag: number
   level: number
   payload: Buffer
+}
+
+interface HwpCharShape {
+  fontFamily: string
+  fontSize: number
+  bold: boolean
+  italic: boolean
+  underline: boolean
+  strike: boolean
+  color?: string
+  highlight?: string
+}
+
+interface HwpParaShape {
+  align: Align
+  indent?: number
+  heading?: number
+}
+
+interface HwpDocContext {
+  charShapes: HwpCharShape[]
+  paraShapes: HwpParaShape[]
+  borderFills: Array<string | undefined>
 }
 
 class CompoundFile {
@@ -91,7 +128,11 @@ class CompoundFile {
 
     let difatSector = firstDifatSector
     const visitedDifat = new Set<number>()
-    for (let extra = 0; extra < difatSectorCount && difatSector < MAX_REGULAR_SECTOR; extra += 1) {
+    for (
+      let extra = 0;
+      extra < difatSectorCount && difatSector < MAX_REGULAR_SECTOR;
+      extra += 1
+    ) {
       if (visitedDifat.has(difatSector)) break
       visitedDifat.add(difatSector)
       const offset = this.sectorOffset(difatSector)
@@ -241,6 +282,12 @@ class CompoundFile {
 }
 
 export function parseHwp(buffer: Buffer): HwpParseResult {
+  // HWP 3.0 시그니처 확인
+  const asciiHeader = buffer.subarray(0, Math.min(32, buffer.length)).toString('ascii')
+  if (asciiHeader.startsWith(HWP30_SIGNATURE)) {
+    return parseHwp30(buffer)
+  }
+
   const file = new CompoundFile(buffer)
 
   // FileHeader: 32바이트 식별 문자열 + 버전(4) + 플래그(4)
@@ -267,8 +314,12 @@ export function parseHwp(buffer: Buffer): HwpParseResult {
     )
   }
   const compressed = (flags & 0x01) !== 0
+  const distributed = (flags & 0x04) !== 0
 
-  // Section0, Section1, … 순서대로 이어 붙인다.
+  // DocInfo 파싱 (글꼴, 글자 모양, 문단 모양, 셀 배경색)
+  const docContext = parseDocInfoStream(file.stream('DocInfo'), compressed)
+
+  // Section0, Section1, … 순서대로 파싱한다.
   const byNumber = new Map<number, CfbEntry[]>()
   for (const entry of file.streamEntries) {
     if (!entry.name.startsWith('Section')) continue
@@ -281,58 +332,85 @@ export function parseHwp(buffer: Buffer): HwpParseResult {
   }
   const sectionNumbers = [...byNumber.keys()].sort((a, b) => a - b)
 
-  let text = ''
-  for (const number of sectionNumbers) {
-    const entries = byNumber.get(number) ?? []
-    let sectionText = ''
-    for (const entry of entries) {
-      const raw = file.streamOf(entry)
-      if (raw.length === 0) continue
-      // 압축 플래그가 잘못된 파일도 열 수 있도록 양쪽을 순서대로 시도한다.
-      const candidates = compressed ? [inflate(raw), raw] : [raw, inflate(raw)]
-      for (const candidate of candidates) {
-        if (!candidate || candidate.length === 0) continue
-        const candidateText = extractText(parseRecords(candidate))
-        if (candidateText.trim().length > 0) {
-          sectionText = candidateText
+  const blocks: HwpxBlock[] = []
+  let tableCount = 0
+
+  if (!distributed) {
+    for (const number of sectionNumbers) {
+      const entries = byNumber.get(number) ?? []
+      for (const entry of entries) {
+        const raw = file.streamOf(entry)
+        if (raw.length === 0) continue
+        const candidates = compressed ? [inflate(raw), raw] : [raw, inflate(raw)]
+        let parsedSection: { blocks: HwpxBlock[]; tables: number } | null = null
+        for (const candidate of candidates) {
+          if (!candidate || candidate.length === 0) continue
+          const records = parseRecords(candidate)
+          if (records.length === 0) continue
+          const result = parseSectionRecords(records, docContext)
+          if (hasContent(result.blocks)) {
+            parsedSection = result
+            break
+          }
+        }
+        if (parsedSection) {
+          blocks.push(...parsedSection.blocks)
+          tableCount += parsedSection.tables
           break
         }
       }
-      if (sectionText) break
-    }
-    if (sectionText) {
-      if (text) text += '\n'
-      text += sectionText
     }
   }
 
-  // 본문이 없으면 미리보기 텍스트(PrvText)로 대체한다.
+  // 본문이 없거나 배포용(ViewText 암호화) 문서인 경우 PrvText(미리보기 텍스트)로 대체한다.
   let usedPreview = false
-  if (text.trim().length === 0) {
+  if (!hasContent(blocks)) {
     const preview = file.stream('PrvText')
     if (preview && preview.length > 0) {
-      text = decodePreview(preview)
-      usedPreview = true
+      const previewText = decodePreview(preview)
+      if (previewText) {
+        blocks.length = 0
+        for (const line of previewText.split('\n')) {
+          blocks.push({
+            type: 'paragraph',
+            runs: line ? [{ text: line }] : []
+          })
+        }
+        usedPreview = true
+      }
     }
   }
 
-  text = text
+  const text = blocksToText(blocks)
     .replace(/\r\n/g, '\n')
     .replace(/\u0000/g, '')
     .trim()
 
-  if (!text) {
+  if (!text && blocks.every((b) => b.type !== 'table')) {
     throw new HwpError('no-text', '문서에서 본문 텍스트를 찾지 못했습니다.')
   }
 
   return {
     text,
+    blocks: blocks.length > 0 ? blocks : [{ type: 'paragraph', runs: [{ text }] }],
     version: formatVersion(version),
     compressed,
     encrypted: false,
-    sections: sectionNumbers.length,
+    distributed,
+    sections: Math.max(1, sectionNumbers.length),
+    tables: tableCount,
     usedPreview
   }
+}
+
+function hasContent(blocks: HwpxBlock[]): boolean {
+  for (const block of blocks) {
+    if (block.type === 'table' && block.rows.length > 0) return true
+    if (block.type === 'paragraph' && block.runs.some((r) => r.text.trim().length > 0)) {
+      return true
+    }
+  }
+  return false
 }
 
 function formatVersion(version: number): string {
@@ -343,7 +421,153 @@ function formatVersion(version: number): string {
   return `${major}.${minor}.${build}.${revision}`
 }
 
-// MARK: - 레코드
+// MARK: - DocInfo 파싱 (글꼴 / 글자 모양 / 문단 모양 / 셀 배경색)
+
+function parseDocInfoStream(raw: Buffer | null, compressed: boolean): HwpDocContext {
+  const empty: HwpDocContext = {
+    charShapes: [],
+    paraShapes: [],
+    borderFills: [undefined]
+  }
+  if (!raw || raw.length === 0) return empty
+
+  const candidates = compressed ? [inflate(raw), raw] : [raw, inflate(raw)]
+  for (const candidate of candidates) {
+    if (!candidate || candidate.length === 0) continue
+    const records = parseRecords(candidate)
+    if (records.length === 0) continue
+
+    const hangulFonts: string[] = []
+    const allFonts: string[] = []
+    let hangulFontLimit = Infinity
+
+    const idMappings = records.find((r) => r.tag === 17)
+    if (idMappings && idMappings.payload.length >= 8) {
+      hangulFontLimit = idMappings.payload.readInt32LE(4)
+    }
+
+    for (const rec of records) {
+      if (rec.tag === 19 && rec.payload.length >= 3) {
+        // HWPTAG_FACE_NAME
+        const nameLen = rec.payload.readUInt16LE(1)
+        const end = Math.min(rec.payload.length, 3 + nameLen * 2)
+        const name = rec.payload
+          .subarray(3, end)
+          .toString('utf16le')
+          .replace(/\u0000/g, '')
+          .trim()
+        allFonts.push(name || '함초롬돋움')
+        if (hangulFonts.length < hangulFontLimit) {
+          hangulFonts.push(name || '함초롬돋움')
+        }
+      } else if (rec.tag === 20) {
+        // HWPTAG_BORDER_FILL (1-based indexing in HWP)
+        empty.borderFills.push(parseBorderFillBg(rec.payload))
+      } else if (rec.tag === 21 && rec.payload.length >= 56) {
+        // HWPTAG_CHAR_SHAPE
+        const p = rec.payload
+        const fontId = p.readUInt16LE(0)
+        const heightHwp = p.readInt32LE(42)
+        const attr = p.readUInt32LE(46)
+        const colorRef = p.readUInt32LE(52)
+        const shadeColorRef = p.length >= 64 ? p.readUInt32LE(60) : 0xffffffff
+
+        const fontName =
+          hangulFonts[fontId] ?? allFonts[fontId] ?? '함초롬돋움'
+        const pt = Math.max(6, Math.min(120, heightHwp / 100))
+        // 10pt(기본값)은 ~13.33px, 그 외 크기는 비율에 맞춰 px 변환
+        const fontSize = Math.round(((pt * 4) / 3) * 100) / 100
+        const bold = (attr & 0x01) !== 0
+        const italic = (attr & 0x02) !== 0
+        const underlineType = (attr >>> 2) & 0x03
+        const strikeType = (attr >>> 18) & 0x07
+        const colorHex = colorRefToHex(colorRef)
+        const shadeHex =
+          shadeColorRef !== 0xffffffff && shadeColorRef !== 0xffffff
+            ? colorRefToHex(shadeColorRef)
+            : undefined
+
+        empty.charShapes.push({
+          fontFamily: normalizeFontFamily(fontName),
+          fontSize,
+          bold,
+          italic,
+          underline: underlineType === 1 || underlineType === 3,
+          strike: strikeType !== 0,
+          color: colorHex !== '#000000' ? colorHex : undefined,
+          highlight: shadeHex && shadeHex !== '#ffffff' ? shadeHex : undefined
+        })
+      } else if (rec.tag === 25 && rec.payload.length >= 8) {
+        // HWPTAG_PARA_SHAPE
+        const p = rec.payload
+        const attr1 = p.readUInt32LE(0)
+        const alignCode = (attr1 >>> 2) & 0x07
+        const align: Align =
+          alignCode === 1
+            ? 'left'
+            : alignCode === 2
+              ? 'right'
+              : alignCode === 3
+                ? 'center'
+                : 'justify'
+        const leftMargin = p.readInt32LE(4)
+        const indent =
+          leftMargin > 1000
+            ? Math.min(5, Math.max(1, Math.round(leftMargin / 4000)))
+            : undefined
+        const headingType = (attr1 >>> 23) & 0x03
+        const headingLevel = ((attr1 >>> 25) & 0x07) + 1
+        const heading =
+          headingType === 1 && headingLevel >= 1 && headingLevel <= 4
+            ? headingLevel
+            : undefined
+
+        empty.paraShapes.push({ align, indent, heading })
+      }
+    }
+
+    if (empty.charShapes.length > 0 || empty.paraShapes.length > 0) {
+      return empty
+    }
+  }
+
+  return empty
+}
+
+function parseBorderFillBg(payload: Buffer): string | undefined {
+  // 패턴 브러시(0x00000001) 뒤에 배경색 COLORREF(4바이트)가 위치한다.
+  if (payload.length < 40) return undefined
+  for (let offset = 26; offset + 8 <= payload.length; offset += 2) {
+    const fillType = payload.readUInt32LE(offset)
+    if (fillType === 1) {
+      const bgRef = payload.readUInt32LE(offset + 4)
+      if (bgRef === 0xffffffff || bgRef === 0x00ffffff) return undefined
+      const hex = colorRefToHex(bgRef)
+      return hex && hex !== '#ffffff' && hex !== '#000000' ? hex : undefined
+    }
+  }
+  return undefined
+}
+
+function colorRefToHex(colorRef: number): string | undefined {
+  const r = colorRef & 0xff
+  const g = (colorRef >>> 8) & 0xff
+  const b = (colorRef >>> 16) & 0xff
+  return (
+    '#' +
+    [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')
+  )
+}
+
+function normalizeFontFamily(name: string): string {
+  const cleaned = name.replace(/^[-\s]+/, '').trim()
+  if (!cleaned) return '함초롬돋움'
+  if (/명조|바탕/.test(cleaned)) return '함초롬바탕'
+  if (/고딕|돋움|굴림|맑은/.test(cleaned)) return '함초롬돋움'
+  return cleaned
+}
+
+// MARK: - Section 레코드 트리 파싱 (문단 · 서식 런 · 표 · 글상자)
 
 function parseRecords(bytes: Buffer): HwpRecord[] {
   const records: HwpRecord[] = []
@@ -366,77 +590,362 @@ function parseRecords(bytes: Buffer): HwpRecord[] {
   return records
 }
 
-/**
- * HWPTAG_PARA_HEADER(0x42)로 문단을 구분하고
- * HWPTAG_PARA_TEXT(0x43)의 UTF-16LE 본문을 뽑는다.
- */
-function extractText(records: HwpRecord[]): string {
-  const paragraphs: string[] = []
-  let current = ''
-  let seenParagraph = false
+function parseSectionRecords(
+  records: HwpRecord[],
+  context: HwpDocContext
+): { blocks: HwpxBlock[]; tables: number } {
+  let tableCounter = 0
 
-  for (const record of records) {
-    if (record.tag === 0x42) {
-      if (seenParagraph) paragraphs.push(current)
-      current = ''
-      seenParagraph = true
-    } else if (record.tag === 0x43) {
-      current += decodeParagraphText(record.payload)
+  const parseRange = (startIndex: number, endIndex: number, paraLevel: number): HwpxBlock[] => {
+    const output: HwpxBlock[] = []
+    let index = startIndex
+
+    while (index < endIndex) {
+      const rec = records[index]
+      if (rec.tag === 66 && rec.level === paraLevel) {
+        // 문단 범위 찾기: 다음 동일/상위 레벨의 PARA_HEADER 또는 LIST_HEADER 전까지
+        let nextIndex = index + 1
+        while (nextIndex < endIndex) {
+          const r = records[nextIndex]
+          if (r.level < paraLevel) break
+          if (r.level === paraLevel && (r.tag === 66 || r.tag === 72)) break
+          nextIndex += 1
+        }
+        output.push(...parseSingleParagraph(index, nextIndex, paraLevel))
+        index = nextIndex
+      } else {
+        index += 1
+      }
     }
-  }
-  if (seenParagraph) paragraphs.push(current)
 
-  const cleaned = paragraphs.map((paragraph) => paragraph.replace(/[\n\r\t ]+$/g, ''))
-  let start = 0
-  let end = cleaned.length
-  while (start < end && cleaned[start].length === 0) start += 1
-  while (end > start && cleaned[end - 1].length === 0) end -= 1
-  if (start >= end) return ''
-  return cleaned.slice(start, end).join('\n')
+    return output
+  }
+
+  const parseSingleParagraph = (
+    pStart: number,
+    pEnd: number,
+    paraLevel: number
+  ): HwpxBlock[] => {
+    const headerPayload = records[pStart].payload
+    const paraShapeId =
+      headerPayload.length >= 10 ? headerPayload.readUInt16LE(8) : 0
+    const breakType = headerPayload.length >= 12 ? headerPayload[11] : 0
+    const pageBreak = (breakType & 0x04) !== 0
+    const paraShape = context.paraShapes[paraShapeId]
+
+    let textPayload: Buffer | null = null
+    const charShapePairs: Array<{ pos: number; shapeId: number }> = []
+    const childBlocks: HwpxBlock[] = []
+
+    let i = pStart + 1
+    while (i < pEnd) {
+      const rec = records[i]
+      if (rec.level === paraLevel + 1 && rec.tag === 67) {
+        textPayload = rec.payload
+        i += 1
+      } else if (rec.level === paraLevel + 1 && rec.tag === 68) {
+        for (let off = 0; off + 8 <= rec.payload.length; off += 8) {
+          charShapePairs.push({
+            pos: rec.payload.readUInt32LE(off),
+            shapeId: rec.payload.readUInt32LE(off + 4)
+          })
+        }
+        i += 1
+      } else if (rec.level === paraLevel + 1 && rec.tag === 71) {
+        // HWPTAG_CTRL_HEADER
+        const ctrlId =
+          rec.payload.length >= 4
+            ? rec.payload.subarray(0, 4).toString('ascii').split('').reverse().join('')
+            : ''
+        let ctrlEnd = i + 1
+        while (ctrlEnd < pEnd && records[ctrlEnd].level > rec.level) {
+          ctrlEnd += 1
+        }
+
+        if (ctrlId === 'tbl ') {
+          const table = parseTableControl(i + 1, ctrlEnd, rec.level + 1)
+          if (table) {
+            tableCounter += 1
+            childBlocks.push(table)
+          }
+        } else if (ctrlId === 'gso ') {
+          // 글상자(개체) 내부 텍스트 추출
+          const gsoBlocks = extractGsoBlocks(i + 1, ctrlEnd, rec.level + 1)
+          childBlocks.push(...gsoBlocks)
+        }
+        i = ctrlEnd
+      } else {
+        i += 1
+      }
+    }
+
+    const runs = textPayload
+      ? decodeStyledRuns(textPayload, charShapePairs, context)
+      : []
+
+    const result: HwpxBlock[] = []
+    const hasRuns = runs.some((r) => r.text.length > 0)
+
+    if (hasRuns || childBlocks.length === 0 || pageBreak) {
+      const paragraph: HwpxParagraph = {
+        type: 'paragraph',
+        runs,
+        align: paraShape?.align,
+        indent: paraShape?.indent,
+        heading: paraShape?.heading,
+        pageBreak: pageBreak ? true : undefined
+      }
+      result.push(paragraph)
+    }
+
+    result.push(...childBlocks)
+    return result
+  }
+
+  const parseTableControl = (
+    cStart: number,
+    cEnd: number,
+    tableLevel: number
+  ): HwpxTable | null => {
+    let rowCount = 0
+    let colCount = 0
+    let idx = cStart
+
+    while (idx < cEnd) {
+      const r = records[idx]
+      if (r.level === tableLevel && r.tag === 77 && r.payload.length >= 8) {
+        rowCount = r.payload.readUInt16LE(4)
+        colCount = r.payload.readUInt16LE(6)
+        idx += 1
+        break
+      }
+      idx += 1
+    }
+    if (rowCount <= 0 || colCount <= 0) return null
+
+    // LIST_HEADER(tag=72, level=tableLevel)가 각 셀의 시작이다.
+    interface ParsedCell {
+      col: number
+      row: number
+      colspan: number
+      rowspan: number
+      background?: string
+      blocks: HwpxBlock[]
+    }
+    const cells: ParsedCell[] = []
+
+    while (idx < cEnd) {
+      const r = records[idx]
+      if (r.level === tableLevel && r.tag === 72 && r.payload.length >= 16) {
+        let cellEnd = idx + 1
+        while (cellEnd < cEnd) {
+          const next = records[cellEnd]
+          if (next.level < tableLevel) break
+          if (next.level === tableLevel && next.tag === 72) break
+          cellEnd += 1
+        }
+
+        const p = r.payload
+        // HWP 5.0 셀 LIST_HEADER:
+        // offset 8: colAddr (UINT16), offset 10: rowAddr (UINT16),
+        // offset 12: colSpan (UINT16), offset 14: rowSpan (UINT16)
+        const col = p.readUInt16LE(8)
+        const row = p.readUInt16LE(10)
+        const colspan = Math.max(1, p.readUInt16LE(12))
+        const rowspan = Math.max(1, p.readUInt16LE(14))
+        // borderFillId는 offset 32 (또는 30)에 위치
+        let background: string | undefined
+        if (p.length >= 34) {
+          const bfId = p.readUInt16LE(32)
+          background = context.borderFills[bfId]
+        }
+
+        // 셀 내부 문단의 레벨은 idx+1 레코드(PARA_HEADER)의 레벨을 따른다.
+        let cellParaLevel = tableLevel
+        for (let k = idx + 1; k < cellEnd; k += 1) {
+          if (records[k].tag === 66) {
+            cellParaLevel = records[k].level
+            break
+          }
+        }
+
+        const cellBlocks = parseRange(idx + 1, cellEnd, cellParaLevel)
+        cells.push({
+          col,
+          row,
+          colspan,
+          rowspan,
+          background,
+          blocks:
+            cellBlocks.length > 0 ? cellBlocks : [{ type: 'paragraph', runs: [] }]
+        })
+        idx = cellEnd
+      } else {
+        idx += 1
+      }
+    }
+
+    if (cells.length === 0) return null
+
+    // 행(row) 별로 정렬해 HwpxTable을 구성한다.
+    const byRow = new Map<number, ParsedCell[]>()
+    for (const cell of cells) {
+      const list = byRow.get(cell.row) ?? []
+      list.push(cell)
+      byRow.set(cell.row, list)
+    }
+
+    const sortedRowIndices = [...byRow.keys()].sort((a, b) => a - b)
+    const rows: HwpxTableCell[][] = sortedRowIndices.map((rIdx) => {
+      const rowCells = (byRow.get(rIdx) ?? []).sort((a, b) => a.col - b.col)
+      return rowCells.map((c) => {
+        const firstPara = c.blocks.find(
+          (b): b is HwpxParagraph => b.type === 'paragraph' && !!b.align
+        )
+        return {
+          blocks: c.blocks,
+          colspan: c.colspan > 1 ? c.colspan : undefined,
+          rowspan: c.rowspan > 1 ? c.rowspan : undefined,
+          background: c.background,
+          align: firstPara?.align
+        }
+      })
+    })
+
+    return { type: 'table', rows, border: true }
+  }
+
+  const extractGsoBlocks = (
+    gStart: number,
+    gEnd: number,
+    gLevel: number
+  ): HwpxBlock[] => {
+    const out: HwpxBlock[] = []
+    let idx = gStart
+    while (idx < gEnd) {
+      const r = records[idx]
+      if (r.tag === 72) {
+        let subEnd = idx + 1
+        while (subEnd < gEnd && records[subEnd].level > r.level) {
+          subEnd += 1
+        }
+        let paraLevel = r.level + 1
+        for (let k = idx + 1; k < subEnd; k += 1) {
+          if (records[k].tag === 66) {
+            paraLevel = records[k].level
+            break
+          }
+        }
+        out.push(...parseRange(idx + 1, subEnd, paraLevel))
+        idx = subEnd
+      } else {
+        idx += 1
+      }
+    }
+    return out
+  }
+
+  const blocks = parseRange(0, records.length, 0)
+  return { blocks, tables: tableCounter }
 }
 
 /**
- * 문단 텍스트 안의 제어 문자를 처리한다.
- * 0x00/0x0D는 한 글자, 0x09(탭)·확장/인라인 컨트롤은 8글자를 차지한다.
+ * HWPTAG_PARA_TEXT(67)와 HWPTAG_PARA_CHAR_SHAPE(68)를 결합해
+ * 글자 모양(굵게/기울임/밑줄/취소선/색상/형광펜/글꼴/크기)이 적용된 HwpxRun[]을 생성한다.
  */
-function decodeParagraphText(payload: Buffer): string {
+function decodeStyledRuns(
+  payload: Buffer,
+  charShapePairs: Array<{ pos: number; shapeId: number }>,
+  context: HwpDocContext
+): HwpxRun[] {
   const units: number[] = []
   for (let index = 0; index + 1 < payload.length; index += 2) {
     units.push(payload.readUInt16LE(index))
   }
 
-  const output: number[] = []
+  const sortedPairs = [...charShapePairs].sort((a, b) => a.pos - b.pos)
+  const shapeAt = (charIndex: number): HwpCharShape | undefined => {
+    let shapeId = sortedPairs[0]?.shapeId ?? 0
+    for (const pair of sortedPairs) {
+      if (pair.pos <= charIndex) shapeId = pair.shapeId
+      else break
+    }
+    return context.charShapes[shapeId]
+  }
+
+  const runs: HwpxRun[] = []
   let index = 0
+
+  const appendChar = (char: string, shape: HwpCharShape | undefined): void => {
+    if (!char) return
+    const run: HwpxRun = {
+      text: char,
+      bold: shape?.bold || undefined,
+      italic: shape?.italic || undefined,
+      underline: shape?.underline || undefined,
+      strike: shape?.strike || undefined,
+      color: shape?.color,
+      highlight: shape?.highlight,
+      fontFamily: shape?.fontFamily,
+      fontSize:
+        shape?.fontSize && Math.abs(shape.fontSize - 13.33) > 0.5
+          ? shape.fontSize
+          : undefined
+    }
+    const prev = runs[runs.length - 1]
+    if (prev && sameRunStyle(prev, run)) {
+      prev.text += char
+    } else {
+      runs.push(run)
+    }
+  }
+
   while (index < units.length) {
     const unit = units[index]
-    if (unit === 0x000d) {
+    const shape = shapeAt(index)
+
+    if (unit === 0x000d || unit === 0x0000) {
       index += 1
-    } else if (unit === 0x000a) {
-      output.push(0x000a)
+    } else if (unit === 0x000a || unit === 0x0018 || unit === 0x001e || unit === 0x001f) {
+      appendChar(unit === 0x000a ? '\n' : ' ', shape)
       index += 1
     } else if (unit === 0x0009) {
-      output.push(0x0009)
+      appendChar('\t', shape)
       if (index + 7 < units.length && units[index + 7] === 0x0009) {
         index += 8
       } else {
         index += 1
       }
-    } else if (unit === 0x0000) {
-      index += 1
     } else if (unit >= 0x0001 && unit <= 0x001f) {
-      // 인라인/확장 컨트롤은 8글자를 차지한다.
+      // 인라인/확장 컨트롤은 8 WCHAR(16바이트)를 차지한다.
       index += 8
     } else {
-      output.push(unit)
+      appendChar(String.fromCharCode(unit), shape)
       index += 1
     }
   }
 
-  const result = Buffer.allocUnsafe(output.length * 2)
-  for (let i = 0; i < output.length; i += 1) {
-    result.writeUInt16LE(output[i], i * 2)
+  // 문단 끝 공백 정리
+  if (runs.length > 0) {
+    const last = runs[runs.length - 1]
+    last.text = last.text.replace(/[\n\r\t ]+$/g, '')
+    if (!last.text) runs.pop()
   }
-  return result.toString('utf16le')
+
+  return runs
+}
+
+function sameRunStyle(a: HwpxRun, b: HwpxRun): boolean {
+  return (
+    !!a.bold === !!b.bold &&
+    !!a.italic === !!b.italic &&
+    !!a.underline === !!b.underline &&
+    !!a.strike === !!b.strike &&
+    (a.color ?? '') === (b.color ?? '') &&
+    (a.highlight ?? '') === (b.highlight ?? '') &&
+    (a.fontFamily ?? '') === (b.fontFamily ?? '') &&
+    (a.fontSize ?? 0) === (b.fontSize ?? 0)
+  )
 }
 
 /** PrvText(미리보기)는 BOM 없는 UTF-16LE 평문이다. */
@@ -451,10 +960,66 @@ function decodePreview(bytes: Buffer): string {
     .trim()
 }
 
+// MARK: - HWP 3.0 (구형 V3.00 바이너리) 파서
+
+function parseHwp30(buffer: Buffer): HwpParseResult {
+  if (buffer.length < 158) {
+    throw new HwpError('corrupt', 'HWP 3.0 파일 크기가 너무 작습니다.')
+  }
+  const encrypted = buffer.readUInt16LE(30 + 96) !== 0
+  if (encrypted) {
+    throw new HwpError('encrypted', '암호가 설정된 HWP 3.0 파일은 열 수 없습니다.')
+  }
+  const compressed = buffer[30 + 124] !== 0
+  const infoBlockLen = buffer.readUInt16LE(30 + 126)
+
+  // 문서 요약(1008바이트) + 정보 블록 건너뛰기
+  const bodyOffset = 30 + 128 + 1008 + infoBlockLen
+  if (bodyOffset >= buffer.length) {
+    throw new HwpError('corrupt', 'HWP 3.0 본문 오프셋이 올바르지 않습니다.')
+  }
+
+  const rawBody = buffer.subarray(bodyOffset)
+  const body = compressed ? inflate(rawBody) ?? rawBody : rawBody
+
+  // HWP 3.0은 2바이트 조합형/완성형/유니코드가 혼재하므로 읽을 수 있는 텍스트 라인을 추출한다.
+  let text = ''
+  try {
+    text = new TextDecoder('euc-kr', { fatal: false }).decode(body)
+  } catch {
+    text = body.toString('utf8')
+  }
+  const cleanedLines = text
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]+/g, ' ')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+
+  const finalText = cleanedLines.join('\n').trim()
+  if (!finalText) {
+    throw new HwpError('no-text', 'HWP 3.0 문서에서 텍스트를 추출하지 못했습니다.')
+  }
+
+  const blocks: HwpxBlock[] = cleanedLines.map((line) => ({
+    type: 'paragraph',
+    runs: [{ text: line }]
+  }))
+
+  return {
+    text: finalText,
+    blocks,
+    version: '3.0.0.0',
+    compressed,
+    encrypted: false,
+    sections: 1,
+    tables: 0,
+    usedPreview: false
+  }
+}
+
 // MARK: - 압축 해제
 
 function inflate(input: Buffer): Buffer | null {
-  // HWP 5.0은 zlib 헤더가 없는 raw deflate를 사용한다.
   const attempts: Array<() => Buffer> = [
     () => inflateRawSync(input),
     () => inflateRawSync(input, { finishFlush: zlibConstants.Z_SYNC_FLUSH }),
@@ -469,7 +1034,6 @@ function inflate(input: Buffer): Buffer | null {
     }
   }
 
-  // 일부 파일은 zlib 헤더/트레일러를 포함한다.
   if (input.length > 6 && (input[0] & 0x0f) === 8 && (input[1] & 0x20) === 0) {
     try {
       const result = inflateRawSync(input.subarray(2, input.length - 4))

@@ -54,7 +54,7 @@ export function StatusBar({
         >
           {name}
         </button>
-        {kind === 'hwp' && <span className="status-note">텍스트만</span>}
+        {kind === 'hwp' && <span className="status-note">호환 모드</span>}
       </div>
 
       <div className="status-center">

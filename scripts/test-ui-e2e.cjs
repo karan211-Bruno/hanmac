@@ -1,5 +1,8 @@
 const { app, BrowserWindow } = require('electron')
+const { readFileSync } = require('node:fs')
 const { join } = require('node:path')
+
+const sampleHwpBase64 = readFileSync('/Users/newborn/Documents/Welcome to Hwp.hwp').toString('base64')
 
 // E2E UI & Button Verification Script inside real Electron BrowserWindow
 app.whenReady().then(async () => {
@@ -232,6 +235,13 @@ app.whenReady().then(async () => {
         title: '검증문서'
       });
       assert(saved && saved.name === '검증문서.hwpx', 'HWPX 문서 저장 작동', JSON.stringify(saved));
+
+      // 7. Parse HWP in browser webBridge (iPadOS/Web path)
+      const hwpBin = atob('${sampleHwpBase64}');
+      const hwpBytes = new Uint8Array(hwpBin.length);
+      for (let i = 0; i < hwpBin.length; i += 1) hwpBytes[i] = hwpBin.charCodeAt(i);
+      const openedHwp = await window.hanmac.parseBuffer(hwpBytes.buffer, 'Welcome to Hwp.hwp');
+      assert(openedHwp && openedHwp.kind === 'hwp' && openedHwp.html.includes('font-size:'), '구형 HWP 서식·문단 브라우저(iPadOS) 파서 작동', openedHwp.meta.format + ' v' + openedHwp.meta.version);
 
       return { ok: true, count: results.length, results };
     })()

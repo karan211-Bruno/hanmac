@@ -142,6 +142,7 @@ function testHwp(): void {
 
   const result = parseHwp(buffer)
   assert.ok(result.text.length > 500, `본문이 너무 짧습니다: ${result.text.length}`)
+  assert.ok(result.blocks.length >= 5, `HWP 블록이 복원되어야 합니다: ${result.blocks.length}`)
   assert.match(result.text, /[가-힣]/, '한글 본문이 있어야 합니다.')
   assert.ok(result.version.startsWith('5.'), `HWP 5.x 버전이어야 합니다: ${result.version}`)
   assert.ok(result.sections >= 1, '섹션이 하나 이상이어야 합니다.')
@@ -151,13 +152,28 @@ function testHwp(): void {
     /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/,
     '제어 문자가 남아 있으면 안 됩니다.'
   )
+  const hwpHtml = blocksToHtml(result.blocks)
+  assert.match(hwpHtml, /font-size:|<strong>|<span/, 'HWP 서식이 HTML에 반영되어야 합니다.')
 
   console.log(
-    `✓ HWP 파싱: ${result.text.length.toLocaleString()}자 · v${result.version} · ` +
+    `✓ HWP 파싱: ${result.text.length.toLocaleString()}자 · ${result.blocks.length}블록 · v${result.version} · ` +
       `${result.sections}섹션 · 압축 ${result.compressed ? 'O' : 'X'} · ` +
       `미리보기 ${result.usedPreview ? 'O' : 'X'}`
   )
   console.log(`  ${result.text.slice(0, 120).replace(/\n/g, ' / ')}`)
+
+  const tableSample = '/Users/newborn/Documents/2.RESUME.hwp'
+  if (existsSync(tableSample)) {
+    const resumeResult = parseHwp(readFileSync(tableSample))
+    assert.ok(resumeResult.tables >= 1, '표가 포함된 HWP에서 표 개수가 1 이상이어야 합니다.')
+    const tableBlocks = resumeResult.blocks.filter((b) => b.type === 'table')
+    assert.ok(tableBlocks.length >= 1, 'HwpxTable 블록이 복원되어야 합니다.')
+    const resumeHtml = blocksToHtml(resumeResult.blocks)
+    assert.match(resumeHtml, /<table>/, 'HWP 표가 HTML <table>로 변환되어야 합니다.')
+    console.log(
+      `✓ HWP 표·서식 복원 검증 (${tableSample.split('/').pop()}): 표 ${resumeResult.tables}개 · 블록 ${resumeResult.blocks.length}개`
+    )
+  }
 }
 
 async function testHwpx(): Promise<void> {
