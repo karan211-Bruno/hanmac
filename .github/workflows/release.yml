@@ -1,0 +1,63 @@
+name: Build Multi-Platform Releases (macOS, Windows, Ubuntu)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Typecheck & Format Tests
+        run: |
+          npm run typecheck
+          npm run test:formats
+
+      - name: Build Electron bundles
+        run: npm run build
+
+      - name: Package for macOS
+        if: matrix.os == 'macos-latest'
+        run: npx electron-builder --mac --publish never
+
+      - name: Package for Windows
+        if: matrix.os == 'windows-latest'
+        run: npx electron-builder --win --publish never
+
+      - name: Package for Ubuntu / Linux
+        if: matrix.os == 'ubuntu-latest'
+        run: npx electron-builder --linux --publish never
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+            release/*.deb
+            release/*.AppImage
+            release/*.tar.gz

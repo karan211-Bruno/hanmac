@@ -52,6 +52,60 @@ dmg:
       type: link
       path: /Applications
 
+win:
+  icon: build/icon.png
+  artifactName: HanMac-Electron-${version}-win-${arch}.${ext}
+  target:
+    - target: nsis
+      arch:
+        - x64
+        - arm64
+    - target: portable
+      arch:
+        - x64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 한맥 문서
+  artifactName: HanMac-Electron-Setup-${version}-${arch}.${ext}
+
+portable:
+  artifactName: HanMac-Electron-Portable-${version}-${arch}.${ext}
+
+linux:
+  icon: build/icon.png
+  maintainer: HanMac <obedadam@gmail.com>
+  category: Office
+  synopsis: 한맥 문서 — HWPX · HWP 워드프로세서
+  description: 한국어 HWPX · HWP 문서 열기/편집 및 AI 도우미를 지원하는 워드프로세서
+  desktop:
+    entry:
+      Name: 한맥 문서
+      Comment: HWPX · HWP 워드프로세서
+      Keywords: hwp;hwpx;word;korean;한글;문서;
+      StartupWMClass: hanmac-electron
+  artifactName: HanMac-Electron-${version}-linux-${arch}.${ext}
+  target:
+    - target: deb
+      arch:
+        - x64
+        - arm64
+    - target: AppImage
+      arch:
+        - x64
+        - arm64
+    - target: tar.gz
+      arch:
+        - x64
+        - arm64
+
 fileAssociations:
   - ext:
       - hwp

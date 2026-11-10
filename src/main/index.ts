@@ -98,8 +98,15 @@ if (!gotLock) {
   })
 }
 
+function getAppIconPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'icon.png')
+    : join(__dirname, '../../resources/icon.png')
+}
+
 function createWindow(): void {
   isDirty = false
+  const iconPath = getAppIconPath()
   const win = new BrowserWindow({
     width: 1360,
     height: 920,
@@ -108,6 +115,7 @@ function createWindow(): void {
     show: false,
     backgroundColor: '#ece9e1',
     title: '한맥 문서',
+    ...(process.platform !== 'darwin' && existsSync(iconPath) ? { icon: iconPath } : {}),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     trafficLightPosition: { x: 16, y: 18 },
     acceptFirstMouse: true,

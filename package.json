@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "description": "한맥 문서 — Electron + TipTap 기반 워드프로세서",
   "main": "./out/main/index.js",
-  "author": "HanMac",
+  "desktopName": "hanmac-electron",
+  "author": "HanMac <obedadam@gmail.com>",
   "license": "MIT",
   "type": "commonjs",
   "scripts": {
@@ -14,6 +15,9 @@
     "test:formats": "tsx scripts/test-formats.ts",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:linux": "npm run build && electron-builder --linux",
+    "dist:all": "npm run build && electron-builder --mac --win --linux",
     "release:mac": "./scripts/release-mac.sh"
   },
   "keywords": [
